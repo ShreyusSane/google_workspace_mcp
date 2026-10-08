@@ -96,11 +96,30 @@ DEFAULT_CREDENTIALS_DIR = get_default_credentials_dir()
 
 
 _GOOGLE_API_TIMEOUT_ENV = "WORKSPACE_MCP_GOOGLE_API_TIMEOUT_SECONDS"
+_GOOGLE_API_BASE_URL_ENV = "WORKSPACE_MCP_GOOGLE_API_BASE_URL"
 # googleapiclient's own default socket timeout.
 _DEFAULT_GOOGLE_API_TIMEOUT_SECONDS = 60
 # Token validation holds one of a few dedicated workers, so it is not stretched
 # by a timeout raised for long tool requests.
 _USER_INFO_TIMEOUT_SECONDS = 30
+
+
+def get_google_api_base_url() -> Optional[str]:
+    """Parse WORKSPACE_MCP_GOOGLE_API_BASE_URL, an alternative host for every
+    Google API, such as a local emulator in tests. None means Google's own.
+
+    The value must be an http(s) URL; a trailing slash is added. Invalid values
+    raise instead of falling back to Google.
+    """
+    raw = os.getenv(_GOOGLE_API_BASE_URL_ENV, "").strip()
+    if not raw:
+        return None
+    parsed = urlparse(raw)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(
+            f"{_GOOGLE_API_BASE_URL_ENV} must be an http(s) URL, got {raw!r}"
+        )
+    return raw.rstrip("/") + "/"
 
 
 def get_google_api_timeout() -> int:
@@ -158,7 +177,21 @@ def build_google_service(
     service_name: str, version: str, credentials: google.auth.credentials.Credentials
 ) -> Resource:
     """Build a discovery client on a pooled, timeout-bounded connection."""
-    return build(service_name, version, http=_build_authorized_http(credentials))
+    service = build(service_name, version, http=_build_authorized_http(credentials))
+    base_url = get_google_api_base_url()
+    if base_url is None:
+        return service
+    # Keep the API's own path (gmail/v1/..., calendar/v3/, drive/v3/) and swap
+    # only the host it is served from.
+    root = service._rootDesc.get("rootUrl", "")
+    endpoint = base_url + service._baseUrl[len(root) :]
+    service.close()
+    return build(
+        service_name,
+        version,
+        http=_build_authorized_http(credentials),
+        client_options={"api_endpoint": endpoint},
+    )
 
 
 @contextmanager
