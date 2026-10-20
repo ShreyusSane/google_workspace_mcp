@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import jwt
 import logging
 import os
@@ -18,7 +19,8 @@ from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 from google.auth.exceptions import RefreshError
 import google.auth.credentials
-from googleapiclient.discovery import Resource, build
+from googleapiclient.discovery import Resource, build, build_from_document
+from googleapiclient.discovery_cache import get_static_doc
 from googleapiclient.errors import HttpError
 import httplib2
 import google_auth_httplib2
@@ -177,21 +179,22 @@ def build_google_service(
     service_name: str, version: str, credentials: google.auth.credentials.Credentials
 ) -> Resource:
     """Build a discovery client on a pooled, timeout-bounded connection."""
-    service = build(service_name, version, http=_build_authorized_http(credentials))
     base_url = get_google_api_base_url()
     if base_url is None:
-        return service
-    # Keep the API's own path (gmail/v1/..., calendar/v3/, drive/v3/) and swap
-    # only the host it is served from.
-    root = service._rootDesc.get("rootUrl", "")
-    endpoint = base_url + service._baseUrl[len(root) :]
-    service.close()
-    return build(
-        service_name,
-        version,
-        http=_build_authorized_http(credentials),
-        client_options={"api_endpoint": endpoint},
-    )
+        return build(service_name, version, http=_build_authorized_http(credentials))
+    # Rebuild the client from the API's discovery document with its root URL
+    # replaced. client_options' api_endpoint changes only the base URL: batch
+    # requests (rootUrl + batchPath) and media uploads would still go to Google.
+    document = get_static_doc(service_name, version)
+    if document is None:
+        raise ValueError(
+            f"{_GOOGLE_API_BASE_URL_ENV} needs the bundled discovery document for "
+            f"{service_name} {version}, which this googleapiclient does not ship"
+        )
+    discovery = json.loads(document)
+    discovery["rootUrl"] = base_url
+    discovery["mtlsRootUrl"] = base_url
+    return build_from_document(discovery, http=_build_authorized_http(credentials))
 
 
 @contextmanager

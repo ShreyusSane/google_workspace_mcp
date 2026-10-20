@@ -58,3 +58,11 @@ def test_build_keeps_each_api_path_on_the_new_host(
         build_google_service(service, version, AnonymousCredentials())._baseUrl
         == overridden
     )
+
+
+def test_batch_requests_and_uploads_also_use_the_new_host(monkeypatch):
+    monkeypatch.setenv(_ENV, "http://google-sim:4002")
+    gmail = build_google_service("gmail", "v1", AnonymousCredentials())
+    assert gmail.new_batch_http_request()._batch_uri == "http://google-sim:4002/batch"
+    upload = gmail.users().messages().send(userId="me", body={"raw": ""})
+    assert upload.uri.startswith("http://google-sim:4002/")
